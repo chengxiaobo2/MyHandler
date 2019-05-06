@@ -12,8 +12,10 @@ Handler是为了解决线程间通讯。一个线程2发送消息给另外一个
 1.有个容器盛放消息，有消息时，循环读消息执行任务，没消息时循环停止。
 ```
 ### Moudle - myhandler1 的实现为：
-点击"添加消息"主线程往消息队列添加10条消息，线程1读消息，交给handler处理。处理完消息以后，线程1挂起，主线程添加消息后，notify挂起的线程1。<br>
-myhanlder1 主要就是为了模拟添加消息，读取消息，处理消息的过程。
+* 1.点击"添加消息"主线程往消息队列添加10条消息。
+* 2.线程1读消息，交给handler处理。
+* 3.handler处理完消息以后，线程1挂起，主线程添加消息后，唤醒起的线程1。<br>
+### myhanlder1 主要就是为了模拟添加消息，读取消息，处理消息的过程。
 代码见 Moudle - myhandler1
 
 
@@ -149,4 +151,166 @@ class MyHandler1Activity : AppCompatActivity() {
 2019-02-14 16:31:50.289 30033-30727/com.example.myhandler1 E/myHandler1: deal message 9
 2019-02-14 16:31:51.291 30033-30727/com.example.myhandler1 E/myHandler1: deal message 10
 2019-02-14 16:31:52.293 30033-30727/com.example.myhandler1 E/myHandler1: 线程挂起
+```
+
+### 3.第二步，第一步的myhandler1有如下问题。
+* 1.第一步的MyHandler1Activity的内容有点多，耦合性比较强，可以抽象出来一个Looper对象。
+* 2.第一步主要是为了模拟消息模型，写的比较死，主线程往消息队列添加消息，另外一个线程去读消息，交个handler处理。现实中，可能存在好多个线程，以及好多个handler。所以需要理清楚其中的关系。
+    * 1.一个线程对应一个消息队列。<br>
+    * 2.一个线程对应着多个handler。<br>
+    * 3.一个线程向另一个线程发送消息，并不是直接往消息队列里面添加消息，是通过handler添加的，并制定该handler处理。<br>
+
+### Moudle - myhandler2 的实现为：
+* 1.点击"添加消息"主线程发送10条消息给handler。
+* 2.handler往Looper对应的消息队列里面添加消息。
+* 3.在子线程创建Looper对象，looper循环读取消息队列的消息，交给对应的handler处理。
+* 4.handler处理完消息以后，线程挂起，当handler再添加消息，则线程唤醒接着处理消息。
+<br>
+代码见 Moudle - myhandler2
+
+MyMessage 
+
+```java
+/**
+ * 消息
+ *
+ * @author chengxiaobo
+ * @time 2019/5/2 08:30
+ */
+class MyMessage(val WHAT: Int)
+
+```
+MyHandlerMessage
+```java
+/**
+ *
+ * @author chengxiaobo
+ * @time 2019/5/6 13:34
+ */
+class MyHandlerMessage (val myMessage: MyMessage,val myHandler: MyHandler)
+```
+
+MyMessageQueue
+```java
+/**
+ * 消息队列
+ *
+ * @author chengxiaobo
+ * @time 2019/5/6 12:31
+ */
+class MyMessageQueue {
+
+    private val messageList = LinkedList<MyHandlerMessage>()
+    private val condition = Object()
+
+    /**
+     * 主线程添加消息，如果添加消息之前是空队列，通知挂起的线程
+     */
+    fun addMessage(message: MyHandlerMessage) {
+        synchronized(condition) {
+            messageList.add(message)
+            if (messageList.size == 1) {
+                condition.notify()
+            }
+        }
+    }
+
+    /**
+     * 线程1 读取消息，如果消息队列没有消息，则线程挂起
+     */
+    fun getMessage(): MyHandlerMessage {
+        synchronized(condition) {
+            if (messageList.size == 0) {
+                loge("线程挂起")
+                condition.wait()
+            }
+            return messageList.removeAt(0)
+        }
+    }
+}
+```
+
+MyHandler
+```java 
+/**
+ * 处理消息
+ *
+ * @author chengxiaobo
+ * @time 2019/5/6 13:32
+ */
+abstract class MyHandler(private val myLooper: MyLooper?) {
+    abstract fun handleMessage(message: MyMessage)
+
+    //往消息队列里面添加消息
+    fun sendMessage(message: MyMessage) {
+        myLooper?.queue?.addMessage(MyHandlerMessage(message, this))
+    }
+}
+```
+
+MyLooper
+```java
+/**
+ * looper
+ *
+ * @author chengxiaobo
+ * @time 2019/5/6 13:35
+ */
+class MyLooper {
+
+    var queue = MyMessageQueue()
+
+    fun loop() {
+        while (true) {
+            val myHandlerMessage = queue.getMessage()
+            myHandlerMessage.myHandler.handleMessage(myHandlerMessage.myMessage)
+        }
+    }
+}
+
+```
+
+MyHandler2Activity
+```java
+/**
+ * @author chengxiaobo
+ * @time 2019/5/5 16:00
+ */
+class MyHandler2Activity : AppCompatActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_my_handler2)
+
+        //1.创建looper
+        var myLooper: MyLooper? = null
+        val myThread1 = Thread(Runnable {
+            myLooper = MyLooper()
+            myLooper?.loop()
+        })
+        myThread1.start()
+
+        //主线程睡眠1s钟，保证子线程的myLooper创建成功
+        //myLooper在子线程创建，handler在主线程创建，handler创建需要looper，handler创建的时候，需要保证looper已经创建完
+        //这里不去写了，会分析一下 HandlerThread这块是怎么处理的。
+        Thread.sleep(1000)
+
+        //2.创建MyHandler，处理消息
+        val myHandler = object : MyHandler(myLooper) {
+            override fun handleMessage(message: MyMessage) {
+                loge("deal message ${message.WHAT}")
+                Thread.sleep(1000)
+            }
+        }
+        //3.点击一次，主线程添加10条消息到消息队列
+        var i = 0
+        btnAddMessage.setOnClickListener {
+            for (j in 1..10) {
+                loge("add message ${(i * 10) + j}")
+                myHandler.sendMessage(MyMessage((i * 10) + j))
+            }
+            i++
+        }
+    }
+}
 ```
